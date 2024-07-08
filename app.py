@@ -1,50 +1,40 @@
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
 from dotenv import load_dotenv
-load_dotenv()
-
-import streamlit as st
-import io
 import os
+import io
 import base64
 from PIL import Image
 import pdf2image
 import google.generativeai as genai
+import logging
+
+app = Flask(__name__, static_folder='../frontend/build', static_url_path='/')
+CORS(app)
+load_dotenv()
+
+logging.basicConfig(level=logging.DEBUG)
 
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+
 def gemini_response(input, pdf, prompt):
     model = genai.GenerativeModel('gemini-pro-vision')
     response = model.generate_content([input, pdf[0], prompt])
     return response.text
 
 def input_pdf(upload):
-    if upload is not None:    
-        images = pdf2image.convert_from_bytes(upload.read())
-        first_page = images[0]
-        
-        img_arr_byte = io.BytesIO()
-        first_page.save(img_arr_byte, format='JPEG')
-        img_arr_byte = img_arr_byte.getvalue()
-        
-        pdf_parts = [
-            {
-                "mime_type": "image/jpeg",
-                "data": base64.b64encode(img_arr_byte).decode()
-            }
-        ]
-        return pdf_parts
-    else:
-        raise FileNotFoundError("No file uploaded!")
-
-
-st.title("TalenView")
-st.header("Resume tracking System")
-input_text = st.text_area("Job Description: ", key="input")
-upload_file=st.file_uploader("Upload Resume: ", type=["pdf"])
-
-if upload_file is not None:
-    st.write("Resume uploaded successfully!")
-
-button1 = st.button("Scan the Resume for detailed info")
-button2 = st.button("Percentage Match")
+    images = pdf2image.convert_from_bytes(upload.read())
+    first_page = images[0]
+    img_arr_byte = io.BytesIO()
+    first_page.save(img_arr_byte, format='JPEG')
+    img_arr_byte = img_arr_byte.getvalue()
+    pdf_parts = [
+        {
+            "mime_type": "image/jpeg",
+            "data": base64.b64encode(img_arr_byte).decode()
+        }
+    ]
+    return pdf_parts
 
 prompt1 = """
 As an experienced Technical HR professional or interviewer, your task is to thoroughly evaluate the provided resume in detail, 
@@ -120,21 +110,38 @@ Please ensure that your analysis includes the following components:
     and suggest next steps for further consideration.
 """
 
-if button1:
-    if upload_file is not None:
-        pdf_content = input_pdf(upload_file)
-        response = gemini_response(prompt1, pdf_content, input_text)
-        st.subheader("Answer is: ")
-        st.write(response)
-    else:
-        st.write("Something went wrong! Please re-upload resume")
+@app.route('/scan_resume', methods=['POST'])
+def scan_resume():
+    if 'resume' not in request.files or 'job_description' not in request.form:
+        return jsonify({'error': 'Missing resume or job description'}), 400
 
-elif button2:
-    if upload_file is not None:
-        pdf_content = input_pdf(upload_file)
-        response = gemini_response(prompt2, pdf_content, input_text)
-        st.subheader("Answer is: ")
-        st.write(response)
-    else:
-        st.write("Something went wrong! Please re-upload resume")   
+    resume_file = request.files['resume']
+    job_description = request.form['job_description']
+
+    try:
+        pdf_content = input_pdf(resume_file)
         
+        logging.debug("PDF content processed successfully")
+        
+        # Detailed analysis using prompt1
+        detailed_analysis = gemini_response(prompt1, pdf_content, job_description)
+        logging.debug("Detailed analysis completed")
+        
+        # Percentage match using prompt2
+        percentage_match = gemini_response(prompt2, pdf_content, job_description)
+        logging.debug("Percentage match completed")
+        
+        return jsonify({
+            'detailed_analysis': detailed_analysis,
+            'percentage_match': percentage_match
+        })
+    except Exception as e:
+        logging.error(f"An error occurred: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/')
+def serve_react_app():
+    return send_from_directory(app.static_folder, 'index.html')
+
+if __name__ == '__main__':
+    app.run(debug=True)
